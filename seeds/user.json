@@ -1,0 +1,40 @@
+[
+  {
+    "model": "users.user",
+    "pk": 5,
+    "fields": {
+      "password": "pbkdf2_sha256$720000$examplehashedpassword",
+      "last_login": null,
+      "is_superuser": false,
+      "username": "student1",
+      "first_name": "",
+      "last_name": "",
+      "email": "student1@student.com",
+      "is_staff": false,
+      "is_active": true,
+      "date_joined": "2026-07-11T05:00:00Z",
+      "role": "student",
+      "groups": [],
+      "user_permissions": []
+    }
+  },
+  {
+    "model": "users.user",
+    "pk": 6,
+    "fields": {
+      "password": "pbkdf2_sha256$720000$examplehashedpassword",
+      "last_login": null,
+      "is_superuser": false,
+      "username": "student2",
+      "first_name": "",
+      "last_name": "",
+      "email": "student2@student.com",
+      "is_staff": false,
+      "is_active": true,
+      "date_joined": "2026-07-11T05:00:00Z",
+      "role": "student",
+      "groups": [],
+      "user_permissions": []
+    }
+  }
+]

@@ -1,0 +1,30 @@
+[
+  {
+    "model": "students.student",
+    "pk": 1,
+    "fields": {
+      "user": 5,
+      "student_id": "STU001",
+      "name": "Ahmad Firdaus",
+      "email": "student1@student.com",
+      "faculty": "Faculty of Computing and Informatics",
+      "course": "Software Engineering",
+      "year": 3,
+      "created_at": "2026-07-11T05:00:00Z"
+    }
+  },
+  {
+    "model": "students.student",
+    "pk": 2,
+    "fields": {
+      "user": 6,
+      "student_id": "STU002",
+      "name": "Nur Aisyah",
+      "email": "student2@student.com",
+      "faculty": "Faculty of Computing and Informatics",
+      "course": "Information Technology",
+      "year": 2,
+      "created_at": "2026-07-11T05:00:00Z"
+    }
+  }
+]
