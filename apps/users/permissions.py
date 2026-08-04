@@ -1,7 +1,4 @@
 from rest_framework.permissions import BasePermission
-
-
-
 class IsManagement(BasePermission):
 
     def has_permission(self, request, view):
@@ -10,8 +7,6 @@ class IsManagement(BasePermission):
             request.user.is_authenticated
             and request.user.role == "management"
         )
-
-
 
 class IsVolunteer(BasePermission):
 
@@ -22,13 +17,15 @@ class IsVolunteer(BasePermission):
             and request.user.role == "volunteer"
         )
 
-
-
 class IsStudent(BasePermission):
-
     def has_permission(self, request, view):
-
         return (
             request.user.is_authenticated
             and request.user.role == "student"
+        )
+class IsManagementOrVolunteer(BasePermission):
+    def has_permission(self, request, view):
+        return (
+            request.user.is_authenticated
+            and request.user.role in ("management", "volunteer")
         )
