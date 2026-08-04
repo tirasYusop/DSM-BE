@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
+from apps.users.permissions import IsManagement
 from .models import (KitchenSlot,KitchenBooking,BookingParticipant)
 from .api.serializers import (KitchenSlotSerializer,KitchenBookingSerializer,)
 
@@ -11,6 +12,11 @@ class KitchenSlotViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     queryset = KitchenSlot.objects.all().order_by("date","start_time")
     serializer_class = KitchenSlotSerializer
+
+    def get_permissions(self):
+        if self.action in ["create", "update", "partial_update", "destroy"]:
+            return [IsManagement()]
+        return [IsAuthenticated()]
 
     @action(detail=False,methods=["get"], url_path="available")
     def available(self, request):
@@ -39,10 +45,7 @@ class KitchenBookingViewSet(viewsets.ModelViewSet):
             student = request.user.student_profile
         except:
             return Response(
-                {
-                    "error": "Student profile not found."
-                },
-                status=400
+                {"error": "Student profile not found."},status=400
             )
         bookings = KitchenBooking.objects.filter(
             student=student
