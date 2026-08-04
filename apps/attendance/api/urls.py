@@ -1,10 +1,6 @@
 from django.urls import path
-from apps.attendance.views import mark_attendance, submit_activity, activity_list,my_activity
-
-from ..views import (
-    management_walkin,
-    management_booking
-)
+from apps.attendance.views import (mark_attendance, submit_activity, activity_list,my_activity,StudentSummaryView)
+from ..views import ( management_walkin, management_booking)
 
 urlpatterns = [
     path("mark/", mark_attendance),
@@ -13,4 +9,5 @@ urlpatterns = [
     path("activity/submit/", submit_activity),
     path("activity/list/", activity_list),
     path("my-activity/", my_activity, name="my-activity"),
+    path("summary/student/", StudentSummaryView.as_view(), name="student-summary"),
 ]
