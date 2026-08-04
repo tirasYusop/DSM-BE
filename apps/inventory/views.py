@@ -8,10 +8,11 @@ from rest_framework.response import Response
 from rest_framework import viewsets
 from rest_framework.parsers import (MultiPartParser, FormParser, JSONParser)
 from rest_framework.permissions import IsAuthenticated,AllowAny
+from apps.users.permissions import IsManagement, IsManagementOrVolunteer
 from .models import (InventoryItem, InventoryRequest, StockMovement, SourceInventory,UsageLog, KitchenStockStatus)
 from .api.serializers import (InventoryItemSerializer, InventoryRequestSerializer, StockMovementSerializer,SourceInventorySerializer, UsageLogSerializer, KitchenStockStatusSerializer)
 from apps.kitchens.models import Kitchen
-
+ 
 def get_current_stock(item, kitchen=None, is_foodbank=None):
     filters = {"item": item, "kitchen": kitchen}
     if is_foodbank is not None:
@@ -23,9 +24,13 @@ def get_current_stock(item, kitchen=None, is_foodbank=None):
 
 
 class InventoryItemViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
-    queryset = InventoryItem.objects.all().order_by("-created_at")
     serializer_class = InventoryItemSerializer
+    queryset = InventoryItem.objects.all().order_by("-created_at")
+
+    def get_permissions(self):
+        if self.action in ["create", "update", "partial_update", "destroy"]:
+            return [IsManagement()]
+        return [IsAuthenticated()]
 
     @action(detail=False, methods=["get"], url_path="available")
     def available(self, request):
@@ -107,10 +112,14 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
         return Response(data)
 
 class StockMovementViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
     queryset = StockMovement.objects.all().order_by("-created_at")
     serializer_class = StockMovementSerializer
     parser_classes = (MultiPartParser, FormParser, JSONParser)
+
+    def get_permissions(self):
+        if self.action in ["create", "update", "partial_update", "destroy"]:
+            return [IsManagement()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -134,7 +143,7 @@ class StockMovementViewSet(viewsets.ModelViewSet):
 
         return queryset
 
-    @action(detail=False, methods=["get"], url_path="my-stock")
+    @action(detail=False, methods=["get"], url_path="my-stock", permission_classes=[IsManagementOrVolunteer])
     def my_stock(self, request):
         kitchen = request.user.kitchen
         if not kitchen:
@@ -171,7 +180,7 @@ class StockMovementViewSet(viewsets.ModelViewSet):
 
         return Response(data)
 
-    @action(detail=False, methods=["post"], url_path="transfer")
+    @action(detail=False, methods=["post"], url_path="transfer", permission_classes=[IsManagement])
     def transfer(self, request):
 
         item_id = request.data.get("item")
@@ -238,7 +247,7 @@ class StockMovementViewSet(viewsets.ModelViewSet):
             {"message": "Stock transferred successfully"}
         )
 
-    @action(detail=False, methods=["post"], url_path="use")
+    @action(detail=False, methods=["post"], url_path="use", permission_classes=[IsManagementOrVolunteer])
     def use_stock(self, request):
         item_id = request.data.get("item")
         kitchen = request.user.kitchen
@@ -289,9 +298,13 @@ class StockMovementViewSet(viewsets.ModelViewSet):
 
 
 class UsageLogViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
     serializer_class = UsageLogSerializer
     queryset = UsageLog.objects.all().order_by("-created_at")
+
+    def get_permissions(self):
+        if self.action in ["create", "update", "partial_update", "destroy"]:
+            return [IsManagement()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -303,9 +316,13 @@ class UsageLogViewSet(viewsets.ModelViewSet):
 
 class KitchenStockStatusViewSet(viewsets.ModelViewSet):
 
-    permission_classes = [IsAuthenticated]
     serializer_class = KitchenStockStatusSerializer
     queryset = KitchenStockStatus.objects.all()
+
+    def get_permissions(self):
+        if self.action in ["create", "update", "partial_update", "destroy"]:
+            return [IsManagement()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -322,7 +339,7 @@ class KitchenStockStatusViewSet(viewsets.ModelViewSet):
             return "low"
         return "available"
 
-    @action(detail=False, methods=["post"], url_path="set")
+    @action(detail=False, methods=["post"], url_path="set", permission_classes=[IsManagementOrVolunteer])
     def set_status(self, request):
         item_id = request.data.get("item")
         reported_quantity = request.data.get("quantity")
@@ -412,19 +429,22 @@ class KitchenStockStatusViewSet(viewsets.ModelViewSet):
             "status": status_value,
             "reconciled_stock": get_current_stock(item, kitchen),
         })
-        @action(detail=False, methods=["get"], url_path="alerts")
-        def alerts(self, request):
-            statuses = KitchenStockStatus.objects.filter(
-                status__in=["low", "out"]
-            ).select_related("item", "kitchen").order_by("-updated_at")
 
-            return Response(KitchenStockStatusSerializer(statuses, many=True).data)
+    @action(detail=False, methods=["get"], url_path="alerts", permission_classes=[IsManagementOrVolunteer])
+    def alerts(self, request):
+        statuses = KitchenStockStatus.objects.filter(
+            status__in=["low", "out"]
+        ).select_related("item", "kitchen").order_by("-updated_at")
+
+        return Response(KitchenStockStatusSerializer(statuses, many=True).data)
 
 
 class SourceInventoryViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
     queryset = SourceInventory.objects.all()
     serializer_class = SourceInventorySerializer
+
+    def get_permissions(self):
+        return [IsManagement()]
 
     def create(self, request, *args, **kwargs):
         item_id = request.data.get("item")
@@ -529,9 +549,13 @@ class SourceInventoryViewSet(viewsets.ModelViewSet):
 
 
 class InventoryRequestViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
     queryset = InventoryRequest.objects.all().order_by("-created_at")
     serializer_class = InventoryRequestSerializer
+
+    def get_permissions(self):
+        if self.action in ["update", "partial_update", "destroy"]:
+            return [IsManagement()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -555,7 +579,7 @@ class InventoryRequestViewSet(viewsets.ModelViewSet):
         kitchen = getattr(self.request.user, "kitchen", None)
         serializer.save(kitchen=kitchen)
 
-    @action(detail=True, methods=["post"])
+    @action(detail=True, methods=["post"], permission_classes=[IsManagementOrVolunteer])
     def cancel(self, request, pk=None):
         request_obj = self.get_object()
 
@@ -570,7 +594,7 @@ class InventoryRequestViewSet(viewsets.ModelViewSet):
 
         return Response({"message": "Request cancelled"})
 
-    @action(detail=True, methods=["post"])
+    @action(detail=True, methods=["post"], permission_classes=[IsManagement])
     def approve(self, request, pk=None):
         request_obj = self.get_object()
 
@@ -623,7 +647,7 @@ class InventoryRequestViewSet(viewsets.ModelViewSet):
 
         return Response({"message": "Request approved and stock transferred"})
 
-    @action(detail=True, methods=["post"])
+    @action(detail=True, methods=["post"], permission_classes=[IsManagement])
     def reject(self, request, pk=None):
         request_obj = self.get_object()
 
@@ -637,7 +661,7 @@ class InventoryRequestViewSet(viewsets.ModelViewSet):
         request_obj.save()
         return Response({"message": "Request rejected"})
 
-    @action(detail=True, methods=["post"])
+    @action(detail=True, methods=["post"], permission_classes=[IsManagement])
     def fulfill_from_stock(self, request, pk=None):
         request_obj = self.get_object()
 
@@ -736,14 +760,10 @@ class LandingPageViewSet(viewsets.ViewSet):
         })
 
 class VolunteerDashboardView(APIView):
-
-    permission_classes = [IsAuthenticated]
-
+    permission_classes = [IsManagementOrVolunteer]
 
     def get(self, request):
-
         kitchen = request.user.kitchen
-
         if not kitchen:
             return Response(
                 {
@@ -753,13 +773,10 @@ class VolunteerDashboardView(APIView):
             )
 
         items = InventoryItem.objects.all()
-
         stock_data = []
         low_stock_data = []
 
-
         for item in items:
-
             stock_in = StockMovement.objects.filter(
                 item=item,
                 kitchen=kitchen,
@@ -767,7 +784,6 @@ class VolunteerDashboardView(APIView):
             ).aggregate(
                 total=Sum("quantity")
             )["total"] or 0
-
 
             stock_out = StockMovement.objects.filter(
                 item=item,
@@ -777,34 +793,21 @@ class VolunteerDashboardView(APIView):
                 total=Sum("quantity")
             )["total"] or 0
 
-
             current_stock = stock_in - stock_out
 
-
             stock_data.append({
-
                 "id": item.id,
-
                 "item": item.display_name,
-
                 "quantity": current_stock,
-
                 "unit": item.unit
-
             })
 
             if current_stock <= 10:
-
                 low_stock_data.append({
-
                     "id": item.id,
-
                     "item": item.display_name,
-
                     "quantity": current_stock,
-
                     "unit": item.unit
-
                 })
 
         recent_usage = UsageLog.objects.filter(
@@ -817,24 +820,14 @@ class VolunteerDashboardView(APIView):
 
 
         recent_usage_data = []
-
-
         for usage in recent_usage:
-
             recent_usage_data.append({
-
                 "id": usage.id,
-
                 "item": usage.item.display_name,
-
                 "quantity": usage.quantity,
-
                 "unit": usage.usage_unit,
-
                 "reason": usage.reason,
-
                 "date": usage.created_at
-
             })
 
         requests = InventoryRequest.objects.filter(
@@ -843,67 +836,39 @@ class VolunteerDashboardView(APIView):
             "-created_at"
         )[:10]
 
-
         request_data = []
 
-
         for req in requests:
-
             request_data.append({
-
                 "id": req.id,
-
                 "item": (
                     req.item.display_name
                     if req.item
                     else req.new_item_name
                 ),
-
                 "quantity": req.quantity,
-
                 "status": req.status,
-
                 "created_at": req.created_at
-
             })
 
-
         today = timezone.now().date()
-
-
         today_usage = UsageLog.objects.filter(
             kitchen=kitchen,
             created_at__date=today
         ).count()
 
-
         return Response({
-
             "summary": {
-
                 "total_inventory_items": len(stock_data),
-
                 "low_stock_items": len(low_stock_data),
-
                 "pending_requests": InventoryRequest.objects.filter(
                     kitchen=kitchen,
                     status="pending"
                 ).count(),
-
                 "today_usage": today_usage,
-
             },
-
-
             "low_stock": low_stock_data,
-
-
             "recent_usage": recent_usage_data,
-
-
             "pending_requests": request_data,
-
-
             "stock": stock_data
-
         })

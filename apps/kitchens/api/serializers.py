@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from ..models import Kitchen,VolunteerShift,VolunteerProfile
+from ..models import Kitchen,VolunteerShift,VolunteerProfile,ShiftSlot,ScheduledShift
 
 
 class KitchenSerializer(serializers.ModelSerializer):
@@ -36,3 +36,30 @@ class VolunteerShiftSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["clock_in", "clock_out", "created_at"]
+
+class ShiftSlotSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ShiftSlot
+        fields = ["id", "kitchen", "name", "slot_type", "start_time", "end_time", "capacity"]
+
+
+class ScheduledShiftSerializer(serializers.ModelSerializer):
+    volunteer_name = serializers.CharField(source="volunteer.name", read_only=True)
+    slot_name = serializers.CharField(source="slot.name", read_only=True)
+
+    class Meta:
+        model = ScheduledShift
+        fields = ["id", "slot", "slot_name", "volunteer", "volunteer_name", "date", "created_at"]
+
+    def validate(self, data):
+        slot = data.get("slot") or getattr(self.instance, "slot", None)
+        date = data.get("date") or getattr(self.instance, "date", None)
+
+        qs = ScheduledShift.objects.filter(slot=slot, date=date)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.count() >= slot.capacity:
+            raise serializers.ValidationError(
+                f"This slot is already full ({slot.capacity} volunteers) for {date}."
+            )
+        return data

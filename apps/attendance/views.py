@@ -1,14 +1,20 @@
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import status
 from django.utils import timezone
 from apps.kitchens.models import Kitchen
 from apps.booking.models import KitchenBooking
+from apps.users.permissions import IsManagement
 from .models import (AttendanceRecord,AttendanceSession,StudentActivity, FoodbankTakenItem)
 from .api.serializers import AttendanceSerializer,StudentActivitySerializer
 from django.db import transaction
 from apps.inventory.models import InventoryItem, StockMovement
 from apps.inventory.views import get_current_stock
+from django.db.models import Count
+from django.db.models.functions import TruncMonth
+from rest_framework.views import APIView
+from rest_framework.permissions import AllowAny
+from apps.students.models import Student 
 
 @api_view(["POST"])
 def mark_attendance(request):
@@ -42,7 +48,6 @@ def mark_attendance(request):
             kitchen = Kitchen.objects.get(id=kitchen_id)
 
         except Kitchen.DoesNotExist:
-
             return Response(
                 {
                     "error":"Kitchen not found"
@@ -108,6 +113,7 @@ def mark_attendance(request):
     )
 
 @api_view(["GET"])
+@permission_classes([IsManagement])
 def attendance_list(request):
 
     records = AttendanceRecord.objects.select_related(
@@ -124,6 +130,7 @@ def attendance_list(request):
     return Response(serializer.data)
 
 @api_view(["GET"])
+@permission_classes([IsManagement])
 def management_walkin(request):
 
     records = AttendanceRecord.objects.filter(
@@ -135,8 +142,6 @@ def management_walkin(request):
     ).order_by(
         "-check_in_time"
     )
-
-
     serializer = AttendanceSerializer(
         records,
         many=True
@@ -148,6 +153,7 @@ def management_walkin(request):
 
 
 @api_view(["GET"])
+@permission_classes([IsManagement])
 def management_booking(request):
     
     records = AttendanceRecord.objects.filter(
@@ -251,6 +257,7 @@ def foodbank_stock_list(request):
 
 
 @api_view(["GET"])
+@permission_classes([IsManagement])
 def activity_list(request):
     activities = StudentActivity.objects.select_related(
         "student", "kitchen", "attendance"
@@ -286,3 +293,83 @@ def my_activity(request):
             pass
 
     return Response(StudentActivitySerializer(activities, many=True).data)
+class StudentSummaryView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        records = AttendanceRecord.objects.select_related("student", "kitchen")
+        total_records = records.count()
+        by_kitchen_qs = (
+            records.exclude(kitchen__isnull=True)
+            .values("kitchen__id", "kitchen__name")
+            .annotate(total=Count("id"))
+            .order_by("-total")
+        )
+        by_kitchen = [
+            {
+                "kitchen_id": r["kitchen__id"],
+                "kitchen_name": r["kitchen__name"],
+                "total": r["total"],
+            }
+            for r in by_kitchen_qs
+        ]
+        category_counts = {choice[0]: 0 for choice in Student.CATEGORY_CHOICES}
+        by_category_qs = (
+            records.values("student__category")
+            .annotate(total=Count("id"))
+        )
+        for r in by_category_qs:
+            category = r["student__category"] or "OTHERS"
+            if category in category_counts:
+                category_counts[category] += r["total"]
+            else:
+                category_counts["OTHERS"] += r["total"]
+
+        by_category = [
+            {"category": category, "total": total}
+            for category, total in category_counts.items()
+        ]
+        purpose_counts = {
+            "take_rice": 0,
+            "take_rice_and_dish": 0,
+            "use_kitchen": 0,
+            "take_rice_and_use_kitchen": 0,
+        }
+
+        activities = StudentActivity.objects.only(
+            "took_rice", "took_dish", "used_kitchen"
+        )
+
+        for a in activities:
+            if a.took_rice and a.used_kitchen:
+                purpose_counts["take_rice_and_use_kitchen"] += 1
+            elif a.took_rice and a.took_dish:
+                purpose_counts["take_rice_and_dish"] += 1
+            elif a.used_kitchen:
+                purpose_counts["use_kitchen"] += 1
+            elif a.took_rice:
+                purpose_counts["take_rice"] += 1
+
+        monthly_qs = (
+            records.exclude(check_in_time__isnull=True)
+            .annotate(month=TruncMonth("check_in_time"))
+            .values("month")
+            .annotate(total=Count("id"))
+            .order_by("month")
+        )
+        monthly_data = [
+            {"month": m["month"].strftime("%Y-%m"), "total": m["total"]}
+            for m in monthly_qs
+        ]
+        total_all_months = sum(m["total"] for m in monthly_data)
+
+        return Response({
+            "total_records": total_records,
+            "by_kitchen": by_kitchen,
+            "by_category": by_category,
+            "by_purpose": purpose_counts,
+            "monthly_summary": {
+                "data": monthly_data,
+                "total_all": total_all_months,
+            },
+        })

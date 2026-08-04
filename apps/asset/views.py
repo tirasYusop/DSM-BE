@@ -6,45 +6,77 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
+from apps.users.permissions import IsManagement
 
+def _image_url(request, image_field):
+    if not image_field:
+        return None
+    try:
+        return request.build_absolute_uri(image_field.url)
+    except ValueError:
+        return None
 
 
 class AssetViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsManagement]
     queryset = Asset.objects.all().order_by("-created_at")
     serializer_class = AssetSerializer
 
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        quantity = request.data.get("quantity")
+
+        if quantity is not None:
+            try:
+                quantity = int(quantity)
+            except (TypeError, ValueError):
+                return Response({"error": "Quantity must be a whole number"}, status=400)
+
+            committed = instance.disposed_quantity + instance.in_maintenance_quantity
+            if quantity < committed:
+                return Response(
+                    {
+                        "error": f"Kuantiti tidak boleh kurang daripada {committed} "
+                                 f"(jumlah unit yang sudah direkodkan dalam penyelenggaraan/pelupusan)"
+                    },
+                    status=400,
+                )
+
+        return super().update(request, *args, **kwargs)
+
     @action(detail=False, methods=["get"], url_path="active")
     def active(self, request):
-        """For dropdowns in Maintenance/Disposal forms — excludes already-disposed assets."""
-        assets = Asset.objects.filter(status="active").order_by("name_brand")
-        return Response(AssetSerializer(assets, many=True).data)
+        candidates = Asset.objects.exclude(status="disposed").order_by("name_brand")
+        assets = [a for a in candidates if a.available_quantity > 0]
+        return Response(AssetSerializer(assets, many=True, context={"request": request}).data)
 
     @action(detail=False, methods=["get"], url_path="overview")
     def overview(self, request):
-        """
-        Full status table: ID, name, purchase date, original location,
-        current status, and full transaction history per asset.
-        """
         assets = Asset.objects.all().select_related("location").order_by("-created_at")
         data = []
 
         for asset in assets:
             transactions = []
 
-            for m in asset.maintenance_records.all().order_by("-maintenance_date"):
+            for m in asset.maintenance_records.all().order_by("-start_date"):
                 transactions.append({
                     "type": "maintenance",
-                    "date": m.maintenance_date,
+                    "date": m.start_date,
+                    "end_date": m.end_date,
+                    "quantity": m.quantity,
                     "notes": m.notes,
+                    "photo_before": _image_url(request, m.photo_before),
+                    "photo_after": _image_url(request, m.photo_after),
                 })
 
-            if hasattr(asset, "disposal_record"):
-                d = asset.disposal_record
+            for d in asset.disposal_records.all().order_by("-disposal_date"):
                 transactions.append({
                     "type": "disposal",
                     "date": d.disposal_date,
+                    "end_date": None,
+                    "quantity": d.quantity,
                     "notes": d.reason,
+                    "photo": _image_url(request, d.photo),
                 })
 
             transactions.sort(key=lambda t: t["date"], reverse=True)
@@ -56,6 +88,11 @@ class AssetViewSet(viewsets.ModelViewSet):
                 "original_location": asset.location.code if asset.location else None,
                 "status": asset.status,
                 "status_display": asset.get_status_display(),
+                "quantity": asset.quantity,
+                "available_quantity": asset.available_quantity,
+                "in_maintenance_quantity": asset.in_maintenance_quantity,
+                "disposed_quantity": asset.disposed_quantity,
+                "image": _image_url(request, asset.image),
                 "transactions": transactions,
             })
 
@@ -63,11 +100,6 @@ class AssetViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="annual-report")
     def annual_report(self, request):
-        """
-        Query params:
-          - year (required): e.g. 2026
-          - asset (optional): filter to one asset id
-        """
         year = request.query_params.get("year")
         if not year:
             return Response({"error": "Year is required"}, status=400)
@@ -85,24 +117,35 @@ class AssetViewSet(viewsets.ModelViewSet):
         data = []
         for asset in assets:
             maintenance = asset.maintenance_records.filter(
-                maintenance_date__year=year
-            ).order_by("maintenance_date")
+                start_date__year=year
+            ).order_by("start_date")
+            disposals = asset.disposal_records.filter(
+                disposal_date__year=year
+            ).order_by("disposal_date")
 
-            disposal = None
-            if hasattr(asset, "disposal_record") and asset.disposal_record.disposal_date.year == year:
-                disposal = asset.disposal_record
-
-            # Skip assets with zero activity in this year AND weren't purchased this year
-            if not maintenance.exists() and not disposal and asset.purchase_date.year != year:
+            if not maintenance.exists() and not disposals.exists() and asset.purchase_date.year != year:
                 continue
 
             events = []
             if asset.purchase_date.year == year:
-                events.append({"type": "purchase", "date": asset.purchase_date, "notes": f"Dibeli - RM{asset.price}"})
+                events.append({
+                    "type": "purchase",
+                    "date": asset.purchase_date,
+                    "notes": f"Dibeli {asset.quantity} unit - RM{asset.price}",
+                })
             for m in maintenance:
-                events.append({"type": "maintenance", "date": m.maintenance_date, "notes": m.notes})
-            if disposal:
-                events.append({"type": "disposal", "date": disposal.disposal_date, "notes": disposal.reason})
+                end_label = m.end_date.isoformat() if m.end_date else "belum pulang"
+                note = f"{m.quantity} unit"
+                if m.notes:
+                    note += f" — {m.notes}"
+                note += f" (pulang: {end_label})"
+                events.append({"type": "maintenance", "date": m.start_date, "notes": note})
+            for d in disposals:
+                events.append({
+                    "type": "disposal",
+                    "date": d.disposal_date,
+                    "notes": f"{d.quantity} unit — {d.reason}",
+                })
 
             events.sort(key=lambda e: e["date"])
 
@@ -118,28 +161,73 @@ class AssetViewSet(viewsets.ModelViewSet):
 
 
 class AssetMaintenanceViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
-    queryset = AssetMaintenance.objects.all().order_by("-maintenance_date")
+    permission_classes = [IsManagement]
+    queryset = AssetMaintenance.objects.all().order_by("-start_date")
     serializer_class = AssetMaintenanceSerializer
-
-    def perform_create(self, serializer):
-        serializer.save(recorded_by=self.request.user)
-
-
-class AssetDisposalViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
-    queryset = AssetDisposal.objects.all().order_by("-disposal_date")
-    serializer_class = AssetDisposalSerializer
 
     def create(self, request, *args, **kwargs):
         asset_id = request.data.get("asset")
+        quantity = request.data.get("quantity", 1)
+
         try:
             asset = Asset.objects.get(id=asset_id)
         except Asset.DoesNotExist:
             return Response({"error": "Invalid asset"}, status=400)
 
+        try:
+            quantity = int(quantity)
+        except (TypeError, ValueError):
+            return Response({"error": "Quantity must be a whole number"}, status=400)
+
+        if quantity < 1:
+            return Response({"error": "Quantity must be at least 1"}, status=400)
+
+        if quantity > asset.available_quantity:
+            return Response(
+                {"error": f"Hanya {asset.available_quantity} unit tersedia untuk dihantar"},
+                status=400,
+            )
+
+        return super().create(request, *args, **kwargs)
+
+    @action(detail=False, methods=["get"], url_path="ongoing")
+    def ongoing(self, request):
+        records = self.get_queryset().filter(end_date__isnull=True).select_related("asset")
+        return Response(AssetMaintenanceSerializer(records, many=True, context={"request": request}).data)
+
+    def perform_create(self, serializer):
+        serializer.save(recorded_by=self.request.user)
+
+class AssetDisposalViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsManagement]
+    queryset = AssetDisposal.objects.all().order_by("-disposal_date")
+    serializer_class = AssetDisposalSerializer
+
+    def create(self, request, *args, **kwargs):
+        asset_id = request.data.get("asset")
+        quantity = request.data.get("quantity", 1)
+
+        try:
+            asset = Asset.objects.get(id=asset_id)
+        except Asset.DoesNotExist:
+            return Response({"error": "Invalid asset"}, status=400)
+
+        try:
+            quantity = int(quantity)
+        except (TypeError, ValueError):
+            return Response({"error": "Quantity must be a whole number"}, status=400)
+
+        if quantity < 1:
+            return Response({"error": "Quantity must be at least 1"}, status=400)
+
         if asset.status == "disposed":
-            return Response({"error": "Asset already disposed"}, status=400)
+            return Response({"error": "Asset already fully disposed"}, status=400)
+
+        if quantity > asset.available_quantity:
+            return Response(
+                {"error": f"Hanya {asset.available_quantity} unit tersedia untuk dilupuskan"},
+                status=400,
+            )
 
         return super().create(request, *args, **kwargs)
 

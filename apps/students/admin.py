@@ -1,7 +1,7 @@
 from django.contrib import admin
 
 from .models import (
-    Student
+    Student,Feedback
 )
 
 
@@ -12,6 +12,12 @@ class StudentAdmin(admin.ModelAdmin):
         "student_id",
         "name",
         "faculty",
+        "category",
         "course",
     )
+
+@admin.register(Feedback)
+class FeedbackAdmin(admin.ModelAdmin):
+
+    list_display = ("student","rating","comment","created_at" )
 

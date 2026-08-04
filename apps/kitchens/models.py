@@ -127,3 +127,44 @@ class VolunteerShift(models.Model):
  
     def __str__(self):
         return f"{self.volunteer.name} ({self.clock_in.date()})"
+
+class ShiftSlot(models.Model):
+    SLOT_TYPE_CHOICES = [
+        ("food_prep", "Penyediaan Makanan"),
+        ("customer_service", "Krew Khidmat Pelanggan"),
+    ]
+
+    kitchen = models.ForeignKey(
+        "kitchens.Kitchen",
+        on_delete=models.CASCADE,
+        related_name="shift_slots",
+    )
+    name = models.CharField(max_length=100, help_text="e.g. '7am-11am Penyediaan Makanan'")
+    slot_type = models.CharField(max_length=20, choices=SLOT_TYPE_CHOICES)
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    capacity = models.PositiveSmallIntegerField(default=2)
+
+    class Meta:
+        ordering = ["start_time"]
+
+    def __str__(self):
+        return f"{self.name} ({self.kitchen.code})"
+
+
+class ScheduledShift(models.Model):
+    slot = models.ForeignKey(ShiftSlot, on_delete=models.CASCADE, related_name="scheduled_shifts")
+    volunteer = models.ForeignKey(VolunteerProfile, on_delete=models.CASCADE, related_name="scheduled_shifts")
+    date = models.DateField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["date", "slot__start_time"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["slot", "volunteer", "date"], name="unique_volunteer_slot_per_day"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.volunteer.name} - {self.slot.name} on {self.date}"
