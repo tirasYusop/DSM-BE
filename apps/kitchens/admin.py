@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Kitchen,VolunteerProfile
+from .models import Kitchen,VolunteerProfile,ShiftSlot
 
 
 @admin.register(Kitchen)
@@ -12,3 +12,7 @@ class KitchenAdmin(admin.ModelAdmin):
 @admin.register(VolunteerProfile)
 class VolunteerProfileAdmin(admin.ModelAdmin):
     list_display =["name","kitchen"]
+
+@admin.register(ShiftSlot)
+class ShiftSlotAdmin(admin.ModelAdmin):
+    list_display=["kitchen","slot_type","start_time","end_time","capacity",]

@@ -3,14 +3,19 @@ from rest_framework import viewsets,serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from .models import Kitchen,VolunteerProfile,VolunteerShift
-from .api.serializers import KitchenSerializer, VolunteerProfileSerializer,VolunteerShiftSerializer
+from apps.users.permissions import IsManagement, IsManagementOrVolunteer
+from .models import Kitchen,VolunteerProfile,VolunteerShift,ShiftSlot,ScheduledShift
+from .api.serializers import KitchenSerializer, VolunteerProfileSerializer,VolunteerShiftSerializer,ScheduledShiftSerializer,ShiftSlotSerializer
 from django.utils import timezone
 
 class KitchenViewSet(viewsets.ModelViewSet):
 
-    permission_classes = [IsAuthenticated]
     serializer_class = KitchenSerializer
+
+    def get_permissions(self):
+        if self.action in ["create", "update", "partial_update", "destroy"]:
+            return [IsManagement()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         user = self.request.user
@@ -50,15 +55,12 @@ class KitchenViewSet(viewsets.ModelViewSet):
 
 
 class VolunteerProfileViewSet(viewsets.ModelViewSet):
-    """
-    The roster of registered volunteers. Volunteers register themselves once
-    (name, faculty, kolej); after that they just pick their name from this
-    list to clock in/out — no individual login required.
-    """
-    permission_classes = [IsAuthenticated]
     serializer_class = VolunteerProfileSerializer
     queryset = VolunteerProfile.objects.all()
- 
+
+    def get_permissions(self):
+        return [IsManagementOrVolunteer()]
+
     def get_queryset(self):
         queryset = super().get_queryset()
         user = self.request.user
@@ -90,10 +92,12 @@ class VolunteerProfileViewSet(viewsets.ModelViewSet):
  
  
 class VolunteerShiftViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
     serializer_class = VolunteerShiftSerializer
     queryset = VolunteerShift.objects.all()
- 
+
+    def get_permissions(self):
+        return [IsManagementOrVolunteer()]
+
     def get_queryset(self):
         queryset = super().get_queryset()
         user = self.request.user
@@ -163,3 +167,106 @@ class VolunteerShiftViewSet(viewsets.ModelViewSet):
         shift.save()
  
         return Response(VolunteerShiftSerializer(shift).data)
+
+class ShiftSlotViewSet(viewsets.ModelViewSet):
+    serializer_class = ShiftSlotSerializer
+    queryset = ShiftSlot.objects.all()
+
+    def get_permissions(self):
+        if self.action in ["create", "update", "partial_update", "destroy"]:
+            return [IsManagementOrVolunteer()]
+        return [IsAuthenticated()]
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        role = getattr(user, "role", None)
+
+        if role == "management":
+            kitchen_id = self.request.data.get("kitchen")
+            if not kitchen_id:
+                raise serializers.ValidationError({"kitchen": "This field is required."})
+            serializer.save(kitchen_id=kitchen_id)
+        else:
+            kitchen = getattr(user, "kitchen", None)
+            if not kitchen:
+                raise serializers.ValidationError({"kitchen": "No kitchen assigned to this account."})
+            serializer.save(kitchen=kitchen)
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        user = self.request.user
+        role = getattr(user, "role", None)
+
+        if role == "management":
+            kitchen = self.request.query_params.get("kitchen")
+            if kitchen:
+                queryset = queryset.filter(kitchen_id=kitchen)
+            return queryset
+
+        kitchen = getattr(user, "kitchen", None)
+        if not kitchen:
+            return queryset.none()
+        return queryset.filter(kitchen=kitchen)
+
+
+class ScheduledShiftViewSet(viewsets.ModelViewSet):
+    serializer_class = ScheduledShiftSerializer
+    queryset = ScheduledShift.objects.all()
+
+    def get_permissions(self):
+        if self.action in ["create", "update", "partial_update", "destroy"]:
+            return [IsManagement()]
+        return [IsAuthenticated()]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        user = self.request.user
+        role = getattr(user, "role", None)
+
+        if role == "management":
+            kitchen = self.request.query_params.get("kitchen")
+            if kitchen:
+                queryset = queryset.filter(slot__kitchen_id=kitchen)
+        else:
+            kitchen = getattr(user, "kitchen", None)
+            if not kitchen:
+                return queryset.none()
+            queryset = queryset.filter(slot__kitchen=kitchen)
+
+        date = self.request.query_params.get("date")
+        if date:
+            queryset = queryset.filter(date=date)
+        return queryset
+
+    @action(detail=False, methods=["get"], url_path="week")
+    def week(self, request):
+        from datetime import timedelta
+
+        start = request.query_params.get("start")
+        start_date = timezone.datetime.strptime(start, "%Y-%m-%d").date() if start else timezone.now().date()
+
+        user = request.user
+        if getattr(user, "role", None) == "management":
+            kitchen_id = request.query_params.get("kitchen")
+        else:
+            kitchen = getattr(user, "kitchen", None)
+            if not kitchen:
+                return Response([])
+            kitchen_id = kitchen.id
+
+        slots = ShiftSlot.objects.filter(kitchen_id=kitchen_id) if kitchen_id else ShiftSlot.objects.none()
+
+        days = [start_date + timedelta(days=i) for i in range(7)]
+        result = []
+        for day in days:
+            day_slots = []
+            for slot in slots:
+                assigned = ScheduledShift.objects.filter(slot=slot, date=day).select_related("volunteer")
+                day_slots.append({
+                    "slot": ShiftSlotSerializer(slot).data,
+                    "assigned": ScheduledShiftSerializer(assigned, many=True).data,
+                    "open_spots": slot.capacity - assigned.count(),
+                })
+            result.append({"date": day.isoformat(), "slots": day_slots})
+
+        return Response(result)
