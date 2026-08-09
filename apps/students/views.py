@@ -6,6 +6,7 @@ from django.db.models import Avg, Count
 from rest_framework.decorators import action
 from .models import Feedback
 from rest_framework.permissions import IsAuthenticated
+from config.paginations import DefaultPagination
 
 from .models import (Student,)
 from .api.serializers import (StudentSerializer)
@@ -26,9 +27,10 @@ class StudentViewSet(viewsets.ModelViewSet):
 class FeedbackViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = FeedbackSerializer
+    pagination_class = DefaultPagination
 
     def get_queryset(self):
-        queryset = Feedback.objects.select_related("student", "kitchen").all()
+        queryset = Feedback.objects.select_related("student", "kitchen").all().order_by("-created_at")
         user = self.request.user
         role = getattr(user, "role", None)
         if role == "student":
@@ -40,6 +42,10 @@ class FeedbackViewSet(viewsets.ModelViewSet):
         kitchen_id = self.request.query_params.get("kitchen")
         if kitchen_id:
             queryset = queryset.filter(kitchen_id=kitchen_id)
+
+        rating = self.request.query_params.get("rating")
+        if rating:
+            queryset = queryset.filter(rating=rating)
 
         return queryset
 
@@ -91,6 +97,6 @@ class FeedbackViewSet(viewsets.ModelViewSet):
 
         return Response({
             "average_rating": round(stats["average_rating"] or 0, 2),
-            "total_feedback": stats["total_feedback"],
+            "total_feedback": stats["total_feedback"] or 0,
             "rating_breakdown": breakdown,
         })

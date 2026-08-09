@@ -18,22 +18,22 @@ class LoginView(APIView):
         password = request.data.get("password")
         if not username or not password:
             return Response(
-                {
-                    "detail":
-                    "Username and password are required."
-                },
+                {"detail": "Username and password are required."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        user = authenticate(username=username,password=password)
+        user = authenticate(username=username, password=password)
 
         if user is None:
             return Response(
-                {
-                    "detail":
-                    "Invalid username or password."
-                },
+                {"detail": "Invalid username or password."},
                 status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        if user.role == "volunteer" and not user.kitchen:
+            return Response(
+                {"detail": "This account is not linked to an active kitchen. Contact management."},
+                status=status.HTTP_403_FORBIDDEN
             )
 
         refresh = RefreshToken.for_user(user)
@@ -54,10 +54,9 @@ class LoginView(APIView):
 
         return Response(
             {
-                "access":str(refresh.access_token),
-                "refresh":str(refresh),
-                "user":user_data
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+                "user": user_data
             },
-
             status=status.HTTP_200_OK
         )

@@ -7,12 +7,14 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import viewsets
 from rest_framework.parsers import (MultiPartParser, FormParser, JSONParser)
-from rest_framework.permissions import IsAuthenticated,AllowAny
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from apps.users.permissions import IsManagement, IsManagementOrVolunteer
-from .models import (InventoryItem, InventoryRequest, StockMovement, SourceInventory,UsageLog, KitchenStockStatus)
-from .api.serializers import (InventoryItemSerializer, InventoryRequestSerializer, StockMovementSerializer,SourceInventorySerializer, UsageLogSerializer, KitchenStockStatusSerializer)
+from config.paginations import DefaultPagination
+from .models import (InventoryItem, InventoryRequest, StockMovement, SourceInventory, UsageLog, KitchenStockStatus)
+from .api.serializers import (InventoryItemSerializer, InventoryRequestSerializer, StockMovementSerializer, SourceInventorySerializer, UsageLogSerializer, KitchenStockStatusSerializer)
 from apps.kitchens.models import Kitchen
- 
+
+
 def get_current_stock(item, kitchen=None, is_foodbank=None):
     filters = {"item": item, "kitchen": kitchen}
     if is_foodbank is not None:
@@ -26,6 +28,7 @@ def get_current_stock(item, kitchen=None, is_foodbank=None):
 class InventoryItemViewSet(viewsets.ModelViewSet):
     serializer_class = InventoryItemSerializer
     queryset = InventoryItem.objects.all().order_by("-created_at")
+    pagination_class = DefaultPagination 
 
     def get_permissions(self):
         if self.action in ["create", "update", "partial_update", "destroy"]:
@@ -47,9 +50,11 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
     def with_stock(self, request):
         items = InventoryItem.objects.all()
         kitchens = Kitchen.objects.filter(is_active=True)
-        data = []
+        page = self.paginate_queryset(items)
+        records = page if page is not None else items
 
-        for item in items:
+        data = []
+        for item in records:
             kitchen_data = []
             management_stock = get_current_stock(item, None)
 
@@ -61,17 +66,12 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
             for kitchen in kitchens:
                 status_record = statuses.get(kitchen.id)
                 stock = get_current_stock(item, kitchen)
-                if stock <= 0:
-                    status = "out"
-                else:
-                    status = status_record.status if status_record else "available"
+                status = "out" if stock <= 0 else (status_record.status if status_record else "available")
                 kitchen_data.append({
                     "kitchen_id": kitchen.id,
                     "kitchen_name": kitchen.code,
                     "stock": stock,
-                    "estimated_value": (
-                        stock * item.price_per_unit if item.price_per_unit else None
-                    ),
+                    "estimated_value": stock * item.price_per_unit if item.price_per_unit else None,
                     "status": status,
                 })
 
@@ -81,11 +81,12 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
                 "unit": item.unit,
                 "price_per_unit": item.price_per_unit,
                 "management_stock": management_stock,
-                "management_value": (
-                    management_stock * item.price_per_unit if item.price_per_unit else None
-                ),
+                "management_value": management_stock * item.price_per_unit if item.price_per_unit else None,
                 "kitchens": kitchen_data
             })
+
+        if page is not None:
+            return self.get_paginated_response(data)
         return Response(data)
     
     @action(detail=False, methods=["get"], url_path="foodbank-stock")
@@ -111,10 +112,12 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
                 })
         return Response(data)
 
+
 class StockMovementViewSet(viewsets.ModelViewSet):
     queryset = StockMovement.objects.all().order_by("-created_at")
     serializer_class = StockMovementSerializer
     parser_classes = (MultiPartParser, FormParser, JSONParser)
+    pagination_class = DefaultPagination
 
     def get_permissions(self):
         if self.action in ["create", "update", "partial_update", "destroy"]:
@@ -126,6 +129,9 @@ class StockMovementViewSet(viewsets.ModelViewSet):
         kitchen = self.request.query_params.get("kitchen")
         movement_type = self.request.query_params.get("movement_type")
         context = self.request.query_params.get("context")
+        search = self.request.query_params.get("search")
+        date = self.request.query_params.get("date")
+        source = self.request.query_params.get("source")
 
         if context == "management":
             queryset = queryset.filter(kitchen__isnull=True)
@@ -141,7 +147,23 @@ class StockMovementViewSet(viewsets.ModelViewSet):
         if movement_type:
             queryset = queryset.filter(movement_type=movement_type)
 
+        if search:
+            queryset = queryset.filter(item__name__icontains=search)
+
+        if date:
+            queryset = queryset.filter(created_at__date=date)
+
+        if source:
+            queryset = queryset.filter(source=source)
+
         return queryset
+
+    @action(detail=False, methods=["get"], url_path="total-value")
+    def total_value(self, request):
+        queryset = self.filter_queryset(self.get_queryset())
+        total = queryset.aggregate(total=Sum("total_amount"))["total"] or 0
+        count = queryset.count()
+        return Response({"total_amount": total, "count": count})
 
     @action(detail=False, methods=["get"], url_path="my-stock", permission_classes=[IsManagementOrVolunteer])
     def my_stock(self, request):
@@ -296,6 +318,22 @@ class StockMovementViewSet(viewsets.ModelViewSet):
 
         return Response({"message": "Usage recorded"})
 
+    @action(detail=False, methods=["get"], url_path="today-summary")
+    def today_summary(self, request):
+        today = timezone.now().date()
+
+        inventory_in_today = StockMovement.objects.filter(
+            movement_type="in", kitchen__isnull=True, created_at__date=today,
+        ).aggregate(total=Sum("quantity"))["total"] or 0
+
+        inventory_out_today = StockMovement.objects.filter(
+            movement_type="out", created_at__date=today,
+        ).aggregate(total=Sum("quantity"))["total"] or 0
+
+        return Response({
+            "inventory_in_today": inventory_in_today,
+            "inventory_out_today": inventory_out_today,
+        })
 
 class UsageLogViewSet(viewsets.ModelViewSet):
     serializer_class = UsageLogSerializer
@@ -343,58 +381,44 @@ class KitchenStockStatusViewSet(viewsets.ModelViewSet):
     def set_status(self, request):
         item_id = request.data.get("item")
         reported_quantity = request.data.get("quantity")
-    
+
         if request.user.role == "management":
             kitchen_id = request.data.get("kitchen")
             if not kitchen_id:
-                return Response(
-                    {
-                        "error": "Kitchen required"
-                    },
-                    status=400
-                )
-    
+                return Response({"error": "Kitchen required"}, status=400)
+
             try:
-                kitchen = Kitchen.objects.get(
-                    id=kitchen_id
-                )
-    
+                kitchen = Kitchen.objects.get(id=kitchen_id)
             except Kitchen.DoesNotExist:
-    
-                return Response(
-                    {
-                        "error":"Invalid kitchen"
-                    },
-                    status=400
-                )
-    
+                return Response({"error": "Invalid kitchen"}, status=400)
+
         else:
             kitchen = request.user.kitchen
         if not kitchen:
             return Response({"error": "No kitchen assigned"}, status=400)
-    
+
         try:
             item = InventoryItem.objects.get(id=item_id)
         except InventoryItem.DoesNotExist:
             return Response({"error": "Invalid item"}, status=400)
-        
+
         if reported_quantity in (None, ""):
             return Response({"error": "Quantity is required"}, status=400)
-    
+
         try:
             reported_quantity = int(reported_quantity)
         except (TypeError, ValueError):
             return Response({"error": "Quantity must be a valid number"}, status=400)
-    
+
         if reported_quantity < 0:
             return Response({"error": "Quantity cannot be negative"}, status=400)
-    
+
         status_value = _compute_status(reported_quantity, item)
-    
+
         with transaction.atomic():
             current = get_current_stock(item, kitchen)
             diff = current - reported_quantity
-    
+
             if diff > 0:
                 StockMovement.objects.create(
                     item=item,
@@ -413,7 +437,7 @@ class KitchenStockStatusViewSet(viewsets.ModelViewSet):
                     reason="Stock reconciliation (correction)",
                     remarks=f"Volunteer recount: {reported_quantity} (was {current})",
                 )
-    
+
             record, _ = KitchenStockStatus.objects.update_or_create(
                 item=item,
                 kitchen=kitchen,
@@ -423,7 +447,7 @@ class KitchenStockStatusViewSet(viewsets.ModelViewSet):
                     "updated_by": request.user,
                 },
             )
-    
+
         return Response({
             "message": "Stock updated",
             "status": status_value,
@@ -442,6 +466,7 @@ class KitchenStockStatusViewSet(viewsets.ModelViewSet):
 class SourceInventoryViewSet(viewsets.ModelViewSet):
     queryset = SourceInventory.objects.all()
     serializer_class = SourceInventorySerializer
+    pagination_class = DefaultPagination
 
     def get_permissions(self):
         return [IsManagement()]
@@ -468,14 +493,17 @@ class SourceInventoryViewSet(viewsets.ModelViewSet):
         except InventoryItem.DoesNotExist:
             return Response({"error": "Invalid item"}, status=400)
 
-        unit_price = request.data.get("unit_price")
-        if unit_price in (None, ""):
+        unit_price_raw = request.data.get("unit_price")
+        if unit_price_raw in (None, ""):
             unit_price = item.price_per_unit or 0
         else:
             try:
-                unit_price = float(unit_price)
+                unit_price = float(unit_price_raw)
             except (TypeError, ValueError):
                 return Response({"error": "unit_price must be a valid number"}, status=400)
+
+            if unit_price <= 0:
+                unit_price = item.price_per_unit or 0
 
         SourceInventory.objects.get_or_create(item=item, source=source)
 
@@ -500,16 +528,17 @@ class SourceInventoryViewSet(viewsets.ModelViewSet):
         if source:
             queryset = queryset.filter(source=source)
 
+        page = self.paginate_queryset(queryset)
+        records = page if page is not None else queryset
+
         data = []
-        for record in queryset:
+        for record in records:
             stock_in = StockMovement.objects.filter(
                 item=record.item,
                 movement_type="in",
                 source=record.source,
                 kitchen__isnull=True
-            ).order_by(
-                "-created_at"
-            )
+            ).order_by("-created_at")
             summary = stock_in.aggregate(
                 total_received=Sum("quantity"),
                 total_amount=Sum("total_amount"),
@@ -527,6 +556,8 @@ class SourceInventoryViewSet(viewsets.ModelViewSet):
                 "last_updated": latest.created_at if latest else None
             })
 
+        if page is not None:
+            return self.get_paginated_response(data)
         return Response(data)
 
     @action(detail=False, methods=["get"], url_path="summary")
@@ -534,10 +565,7 @@ class SourceInventoryViewSet(viewsets.ModelViewSet):
 
         summary = (
             StockMovement.objects
-            .filter(
-                movement_type="in",
-                kitchen__isnull=True
-            )
+            .filter(movement_type="in", kitchen__isnull=True)
             .values("source")
             .annotate(
                 total_quantity=Sum("quantity"),
@@ -563,7 +591,6 @@ class InventoryRequestViewSet(viewsets.ModelViewSet):
         role = getattr(user, "role", None)
 
         if role == "volunteer":
-
             user_kitchen = getattr(user, "kitchen", None)
             if not user_kitchen:
                 return queryset.none()
@@ -584,10 +611,7 @@ class InventoryRequestViewSet(viewsets.ModelViewSet):
         request_obj = self.get_object()
 
         if request_obj.status != "pending":
-            return Response(
-                {"error": "Only pending requests can be cancelled"},
-                status=400
-            )
+            return Response({"error": "Only pending requests can be cancelled"}, status=400)
 
         request_obj.status = "cancelled"
         request_obj.save()
@@ -617,12 +641,14 @@ class InventoryRequestViewSet(viewsets.ModelViewSet):
 
             source = getattr(request_obj, "source", None) or "purchase"
             quantity = request_obj.quantity
+            unit_price = item.price_per_unit or 0
             transfer_id = uuid.uuid4()
 
             SourceInventory.objects.get_or_create(item=item, source=source)
 
             StockMovement.objects.create(
                 item=item, movement_type="in", kitchen=None, quantity=quantity,
+                unit_price=unit_price,
                 source=source, transfer_group=transfer_id,
                 reason="Approved request - purchased",
                 remarks="Approved request - purchased",
@@ -630,12 +656,14 @@ class InventoryRequestViewSet(viewsets.ModelViewSet):
             )
             StockMovement.objects.create(
                 item=item, movement_type="in", kitchen=request_obj.kitchen, quantity=quantity,
+                unit_price=unit_price,
                 transfer_group=transfer_id,
                 reason="Received from management (request fulfilled)",
                 purpose=f"Fulfilling request from {request_obj.kitchen.code}",
             )
             StockMovement.objects.create(
                 item=item, movement_type="out", kitchen=None, quantity=quantity,
+                unit_price=unit_price,
                 transfer_group=transfer_id,
                 reason="Transferred to kitchen (request fulfilled)",
                 remarks="Approved request - purchased",
@@ -652,10 +680,7 @@ class InventoryRequestViewSet(viewsets.ModelViewSet):
         request_obj = self.get_object()
 
         if request_obj.status != "pending":
-            return Response(
-                {"error": "Request already processed"},
-                status=400
-            )
+            return Response({"error": "Request already processed"}, status=400)
 
         request_obj.status = "rejected"
         request_obj.save()
@@ -714,6 +739,7 @@ class InventoryRequestViewSet(viewsets.ModelViewSet):
 
         return Response({"message": "Request fulfilled from existing stock"})
 
+
 class LandingPageViewSet(viewsets.ViewSet):
     permission_classes = [AllowAny]
 
@@ -759,18 +785,14 @@ class LandingPageViewSet(viewsets.ViewSet):
             "sources": list(source_summary),
         })
 
+
 class VolunteerDashboardView(APIView):
     permission_classes = [IsManagementOrVolunteer]
 
     def get(self, request):
         kitchen = request.user.kitchen
         if not kitchen:
-            return Response(
-                {
-                    "error": "User has no kitchen assigned"
-                },
-                status=400
-            )
+            return Response({"error": "User has no kitchen assigned"}, status=400)
 
         items = InventoryItem.objects.all()
         stock_data = []
@@ -778,20 +800,12 @@ class VolunteerDashboardView(APIView):
 
         for item in items:
             stock_in = StockMovement.objects.filter(
-                item=item,
-                kitchen=kitchen,
-                movement_type="in"
-            ).aggregate(
-                total=Sum("quantity")
-            )["total"] or 0
+                item=item, kitchen=kitchen, movement_type="in"
+            ).aggregate(total=Sum("quantity"))["total"] or 0
 
             stock_out = StockMovement.objects.filter(
-                item=item,
-                kitchen=kitchen,
-                movement_type="out"
-            ).aggregate(
-                total=Sum("quantity")
-            )["total"] or 0
+                item=item, kitchen=kitchen, movement_type="out"
+            ).aggregate(total=Sum("quantity"))["total"] or 0
 
             current_stock = stock_in - stock_out
 
@@ -812,12 +826,7 @@ class VolunteerDashboardView(APIView):
 
         recent_usage = UsageLog.objects.filter(
             kitchen=kitchen
-        ).select_related(
-            "item"
-        ).order_by(
-            "-created_at"
-        )[:10]
-
+        ).select_related("item").order_by("-created_at")[:10]
 
         recent_usage_data = []
         for usage in recent_usage:
@@ -832,20 +841,13 @@ class VolunteerDashboardView(APIView):
 
         requests = InventoryRequest.objects.filter(
             kitchen=kitchen
-        ).order_by(
-            "-created_at"
-        )[:10]
+        ).order_by("-created_at")[:10]
 
         request_data = []
-
         for req in requests:
             request_data.append({
                 "id": req.id,
-                "item": (
-                    req.item.display_name
-                    if req.item
-                    else req.new_item_name
-                ),
+                "item": (req.item.display_name if req.item else req.new_item_name),
                 "quantity": req.quantity,
                 "status": req.status,
                 "created_at": req.created_at
@@ -862,8 +864,7 @@ class VolunteerDashboardView(APIView):
                 "total_inventory_items": len(stock_data),
                 "low_stock_items": len(low_stock_data),
                 "pending_requests": InventoryRequest.objects.filter(
-                    kitchen=kitchen,
-                    status="pending"
+                    kitchen=kitchen, status="pending"
                 ).count(),
                 "today_usage": today_usage,
             },

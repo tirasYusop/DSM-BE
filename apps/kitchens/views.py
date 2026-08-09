@@ -1,12 +1,17 @@
 from django.conf import settings
-from rest_framework import viewsets,serializers
+from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from rest_framework import viewsets, serializers
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from apps.users.permissions import IsManagement, IsManagementOrVolunteer
-from .models import Kitchen,VolunteerProfile,VolunteerShift,ShiftSlot,ScheduledShift
-from .api.serializers import KitchenSerializer, VolunteerProfileSerializer,VolunteerShiftSerializer,ScheduledShiftSerializer,ShiftSlotSerializer
+from .models import Kitchen, VolunteerProfile, VolunteerShift, ShiftSlot, ScheduledShift
+from .api.serializers import KitchenSerializer, VolunteerProfileSerializer, VolunteerShiftSerializer, ScheduledShiftSerializer, ShiftSlotSerializer
 from django.utils import timezone
+
+User = get_user_model()
 
 class KitchenViewSet(viewsets.ModelViewSet):
 
@@ -20,27 +25,22 @@ class KitchenViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if user.role == "management":
-            return Kitchen.objects.filter(
-                is_active=True
-            ).order_by(
-                "-created_at"
-            )
+            return Kitchen.objects.filter(is_active=True).order_by("-created_at")
 
         if user.role == "student":
-            return Kitchen.objects.filter(
-                is_active=True
-            ).order_by(
-                "name"
-            )
+            return Kitchen.objects.filter(is_active=True).order_by("name")
 
         if user.role == "volunteer":
             if user.kitchen:
-                return Kitchen.objects.filter(
-                    id=user.kitchen.id,
-                    is_active=True
-                )
+                return Kitchen.objects.filter(id=user.kitchen.id, is_active=True)
 
         return Kitchen.objects.none()
+
+    def destroy(self, request, *args, **kwargs):
+        kitchen = self.get_object()
+        kitchen.is_active = False
+        kitchen.save()
+        return Response({"message": "Kitchen deactivated"}, status=200)
 
     @action(detail=True, methods=["get"], url_path="qr")
     def kitchen_qr(self, request, pk=None):
@@ -52,6 +52,52 @@ class KitchenViewSet(viewsets.ModelViewSet):
             "qr_url": f"{settings.FRONTEND_URL}/student/scan?kitchen={kitchen.id}"
         })
 
+    @action(detail=True, methods=["post"], url_path="reset-credentials", permission_classes=[IsManagement])
+    def reset_credentials(self, request, pk=None):
+        kitchen = self.get_object()
+        new_password = request.data.get("password")
+        if not new_password:
+            return Response({"error": "password is required"}, status=400)
+        try:
+            validate_password(new_password)
+        except Exception as e:
+            raise ValidationError({"password": list(e.messages)})
+
+        user = User.objects.filter(kitchen=kitchen, role="volunteer").first()
+        if not user:
+            return Response({"error": "No account exists for this kitchen"}, status=404)
+
+        user.set_password(new_password)
+        user.save()
+        return Response({"message": "Password updated"})
+
+    @action(detail=True, methods=["post"], url_path="update-credentials", permission_classes=[IsManagement])
+    def update_credentials(self, request, pk=None):
+        kitchen = self.get_object()
+        new_username = request.data.get("username")
+        new_password = request.data.get("password")
+
+        if not new_username and not new_password:
+            return Response({"error": "Provide username and/or password to update"}, status=400)
+
+        user = User.objects.filter(kitchen=kitchen, role="volunteer").first()
+        if not user:
+            return Response({"error": "No account exists for this kitchen"}, status=404)
+
+        if new_username and new_username != user.username:
+            if User.objects.exclude(id=user.id).filter(username=new_username).exists():
+                return Response({"error": "Username already taken"}, status=400)
+            user.username = new_username
+
+        if new_password:
+            try:
+                validate_password(new_password)
+            except Exception as e:
+                raise ValidationError({"password": list(e.messages)})
+            user.set_password(new_password)
+
+        user.save()
+        return Response({"message": "Credentials updated", "username": user.username})
 
 
 class VolunteerProfileViewSet(viewsets.ModelViewSet):
